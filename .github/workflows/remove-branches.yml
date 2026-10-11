@@ -1,0 +1,53 @@
+name: Delete branches from merged PRs
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  delete-branches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete merged PR branches
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: "closed",
+              per_page: 100,
+            });
+
+            for (const pr of prs) {
+              if (!pr.merged_at) continue;
+
+              // Only delete branches in this repository, not branches in forks.
+              if (pr.head.repo?.full_name !== `${owner}/${repo}`) continue;
+
+              const branch = pr.head.ref;
+
+              // Never delete the base branch.
+              if (branch === pr.base.ref) continue;
+
+              try {
+                await github.rest.git.deleteRef({
+                  owner,
+                  repo,
+                  ref: `heads/${branch}`,
+                });
+                core.info(`Deleted "${branch}" (PR #${pr.number})`);
+              } catch (error) {
+                if (error.status === 404) {
+                  core.info(`"${branch}" is already gone (PR #${pr.number})`);
+                } else {
+                  throw error;
+                }
+              }
+            }
