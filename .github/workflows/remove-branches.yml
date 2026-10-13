@@ -18,12 +18,20 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
+
+            const { data: repository } = await github.rest.repos.get({
+              owner,
+              repo,
+            });
+
             const prs = await github.paginate(github.rest.pulls.list, {
               owner,
               repo,
               state: "closed",
               per_page: 100,
             });
+
+            const processedBranches = new Set();
 
             for (const pr of prs) {
               if (!pr.merged_at) continue;
@@ -33,8 +41,12 @@ jobs:
 
               const branch = pr.head.ref;
 
-              // Never delete the base branch.
-              if (branch === pr.base.ref) continue;
+              // Never delete a PR's base branch or the repository's default branch.
+              if (branch === pr.base.ref || branch === repository.default_branch) continue;
+
+              // A branch may be associated with more than one merged PR.
+              if (processedBranches.has(branch)) continue;
+              processedBranches.add(branch);
 
               try {
                 await github.rest.git.deleteRef({
@@ -44,7 +56,12 @@ jobs:
                 });
                 core.info(`Deleted "${branch}" (PR #${pr.number})`);
               } catch (error) {
-                if (error.status === 404) {
+                const message = error.response?.data?.message ?? error.message;
+
+                if (
+                  error.status === 404 ||
+                  (error.status === 422 && message === "Reference does not exist")
+                ) {
                   core.info(`"${branch}" is already gone (PR #${pr.number})`);
                 } else {
                   throw error;
